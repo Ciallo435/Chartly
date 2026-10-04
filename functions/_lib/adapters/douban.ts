@@ -11,6 +11,12 @@
 // foreign titles in a second <span class="title">, which are intentionally
 // dropped. The `info` line is the page's own "/"-separated description line and
 // its meaning is type-dependent (see DoubanEntry.info).
+//
+// `rank` always mirrors the official page order. That is rating-sorted for
+// movie and book, but the music list follows Douban's undocumented
+// popularity-weighted order (verified 2026-10: 116 rating inversions across
+// 247 entries, vote counts roughly decreasing). The `music-top250-bayesian`
+// route serves the same entries re-ranked by Bayesian rating (see BAYES_M).
 
 export type DoubanType = "movie" | "book" | "music";
 
@@ -36,6 +42,10 @@ export interface DoubanTop250 {
 const PAGE_SIZE = 25;
 const PAGE_COUNT = 10; // 250 / 25
 
+/** Bayesian prior weight (IMDb's convention). Votes below this count are pulled
+ *  toward the list-wide mean rating C, damping small-sample high scores. */
+const BAYES_M = 25000;
+
 const UA = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
@@ -56,12 +66,17 @@ const LIST_PAGES: Record<DoubanType, string> = {
   music: "https://music.douban.com/top250",
 };
 
-/** Route names -> source type (mirrors BILLBOARD_CHARTS). */
+/** Route names -> source type (mirrors BILLBOARD_CHARTS). The `*-bayesian`
+ *  variants serve the same entries re-ranked by Bayesian rating. */
 const DOUBAN_TYPES: Record<string, DoubanType> = {
   "movie-top250": "movie",
   "book-top250": "book",
   "music-top250": "music",
+  "music-top250-bayesian": "music",
 };
+
+/** Bayesian-ranked route names (see byBayesianRating). */
+const BAYES_CHARTS = new Set(["music-top250-bayesian"]);
 
 export const DOUBAN_CHARTS = Object.keys(DOUBAN_TYPES);
 
@@ -148,6 +163,24 @@ const PARSERS: Record<DoubanType, (html: string) => Omit<DoubanEntry, "rank">[]>
 };
 
 /**
+ * Re-ranks entries by Bayesian-weighted rating: WR = v/(v+m)·rating +
+ * m/(v+m)·C with C = mean rating across the fetched list, descending. Entries
+ * lacking rating or ratingCount sink to the end in their original order.
+ */
+function byBayesianRating(entries: DoubanEntry[]): DoubanEntry[] {
+  const scored = entries.filter((e) => e.rating !== null && e.ratingCount !== null);
+  const C = scored.reduce((sum, e) => sum + e.rating!, 0) / (scored.length || 1);
+  const wr = new Map(
+    entries.map((e) => {
+      if (e.rating === null || e.ratingCount === null) return [e, -Infinity];
+      const weight = e.ratingCount / (e.ratingCount + BAYES_M);
+      return [e, weight * e.rating + (1 - weight) * C];
+    }),
+  );
+  return [...entries].sort((a, b) => wr.get(b)! - wr.get(a)!).map((e, i) => ({ ...e, rank: i + 1 }));
+}
+
+/**
  * Fetches all 10 pages of a Douban TOP 250 list in parallel and concatenates
  * them. Ranks are the position in the resulting list: a few upstream pages hold
  * fewer than 25 items (the music list actually has 247 entries), so
@@ -173,5 +206,5 @@ export async function fetchDoubanTop250(chart: string): Promise<DoubanTop250> {
   );
 
   const entries = pages.flat().map((entry, i) => ({ ...entry, rank: i + 1 }));
-  return { url: path, entries };
+  return { url: path, entries: BAYES_CHARTS.has(chart) ? byBayesianRating(entries) : entries };
 }

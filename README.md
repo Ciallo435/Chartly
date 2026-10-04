@@ -14,6 +14,7 @@
 | `GET /api/charts/douban/movie-top250` | 豆瓣电影 Top 250 |
 | `GET /api/charts/douban/book-top250` | 豆瓣读书 Top 250 |
 | `GET /api/charts/douban/music-top250` | 豆瓣音乐 Top 250 |
+| `GET /api/charts/douban/music-top250-bayesian` | 豆瓣音乐 Top 250（贝叶斯加权排序） |
 | `GET /api/awards/grammy/{year}` | 格莱美获奖名单 |
 | `GET /api/awards/gma/{year}` | 金曲奖（静态数据） |
 | `GET /api/awards/nobel/{year}` | 诺贝尔奖获奖名单 |
@@ -72,6 +73,7 @@
 - 只返回主标题：电影页 `title` span 里的外文名（第二个 span）会被丢弃。
 - 数据抓取自桌面版列表页 `?start=0,25,…,225` 共 10 页并行合成，缓存 24 小时。
 - 音乐榜上游实际只有 **247** 条（豆瓣下架了 3 个条目），`rank` 最大值为 247。
+- `rank` 镜像豆瓣官方页面顺序：电影 / 读书按评分排序，音乐榜是豆瓣内部的热度序（非评分序）。`music-top250-bayesian` 返回同一份条目，按贝叶斯加权评分 `WR = v/(v+m)·rating + m/(v+m)·C`（m=25000，C 为全榜均分）降序重排 `rank`，供需要"质量序"的调用方使用。
 - 上游任一页解析为空（改版或被拦截）时返回 502，不会静默返回残缺列表。
 
 奖项响应：

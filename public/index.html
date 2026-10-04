@@ -101,7 +101,9 @@
 </footer>
 
 <script>
-  const ENDPOINTS = [
+  // 侧边栏优先从 GET /api 端点索引动态构建（新增路由无需改此页）；
+  // 索引不可用时退回这份硬编码列表，保证调试页始终可用。
+  const FALLBACK_ENDPOINTS = [
     { group: "Charts — Billboard", items: [
       "/api/charts/billboard/hot-100",
       "/api/charts/billboard/album-200",
@@ -112,6 +114,7 @@
       "/api/charts/douban/movie-top250",
       "/api/charts/douban/book-top250",
       "/api/charts/douban/music-top250",
+      "/api/charts/douban/music-top250-bayesian",
     ]},
     { group: "Awards", items: [
       "/api/awards/gma/2026",
@@ -122,28 +125,52 @@
     ]},
   ];
 
+  const GROUP_LABELS = { billboard: "Charts — Billboard", douban: "Charts — Douban", awards: "Awards" };
+
+  /** GET /api 索引 -> [{group, items}]；榜单为完整路径直接用，奖项模板 {year} 取当前年。 */
+  async function loadEndpoints() {
+    try {
+      const res = await fetch(location.origin + "/api");
+      const idx = await res.json();
+      const groups = Object.entries(idx.charts ?? {}).map(([source, items]) => ({
+        group: GROUP_LABELS[source] ?? source,
+        items,
+      }));
+      const year = new Date().getFullYear();
+      groups.push({ group: "Awards", items: idx.awards.map((t) => t.replace("{year}", year)) });
+      return groups;
+    } catch {
+      return FALLBACK_ENDPOINTS;
+    }
+  }
+
   const sidebar = document.getElementById("sidebar");
   const urlInput = document.getElementById("url");
   const output = document.getElementById("output");
   const meta = document.getElementById("meta");
 
-  ENDPOINTS.forEach(({ group, items }) => {
-    const h = document.createElement("h2");
-    h.textContent = group;
-    sidebar.appendChild(h);
-    items.forEach((ep) => {
-      const btn = document.createElement("button");
-      btn.className = "endpoint";
-      btn.innerHTML = `<span class="method">GET</span>${ep}`;
-      btn.onclick = () => {
-        document.querySelectorAll(".endpoint").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        urlInput.value = location.origin + ep;
-        run();
-      };
-      sidebar.appendChild(btn);
+  loadEndpoints().then(buildSidebar);
+
+  /** 按分组渲染侧边栏端点按钮。 */
+  function buildSidebar(groups) {
+    groups.forEach(({ group, items }) => {
+      const h = document.createElement("h2");
+      h.textContent = group;
+      sidebar.appendChild(h);
+      items.forEach((ep) => {
+        const btn = document.createElement("button");
+        btn.className = "endpoint";
+        btn.innerHTML = `<span class="method">GET</span>${ep}`;
+        btn.onclick = () => {
+          document.querySelectorAll(".endpoint").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          urlInput.value = location.origin + ep;
+          run();
+        };
+        sidebar.appendChild(btn);
+      });
     });
-  });
+  }
 
   function highlight(json) {
     return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?([eE][+-]?\d+)?)/g, (m) => {
