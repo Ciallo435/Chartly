@@ -4,6 +4,8 @@ import { withCache } from "../_lib/cache";
 import { rateLimit, clientIp } from "../_lib/ratelimit";
 import { fetchBillboardChart, BILLBOARD_CHARTS } from "../_lib/adapters/billboard";
 import { fetchDoubanTop250, DOUBAN_CHARTS } from "../_lib/adapters/douban";
+import { fetchImdbTop250, IMDB_CHARTS } from "../_lib/adapters/imdb";
+import { fetchGoodreadsList, GOODREADS_CHARTS, GOODREADS_MAX_PAGE } from "../_lib/adapters/goodreads";
 import { fetchGrammy } from "../_lib/adapters/grammy";
 import { fetchGma } from "../_lib/adapters/gma";
 import { fetchNobel } from "../_lib/adapters/nobel";
@@ -53,6 +55,32 @@ async function handleDouban(request: Request, chart: string): Promise<Response> 
   return withCache(request, 86400, async () => json(await fetchDoubanTop250(chart)));
 }
 
+/** GET /api/charts/imdb/{chart} — TOP 250 is near-static; cache for a day. */
+async function handleImdb(request: Request, chart: string): Promise<Response> {
+  if (!IMDB_CHARTS.includes(chart)) return errorJson(404, `unknown chart: ${chart}`);
+  return withCache(request, 86400, async () => json(await fetchImdbTop250(chart)));
+}
+
+/** GET /api/charts/goodreads/{chart} — 100 books/page via ?page=N (ranks
+ *  continue across pages). Vote scores drift slowly; cache each page for a day. */
+async function handleGoodreads(request: Request, chart: string): Promise<Response> {
+  if (!GOODREADS_CHARTS.includes(chart)) return errorJson(404, `unknown chart: ${chart}`);
+
+  let page = 1;
+  const pageParam = new URL(request.url).searchParams.get("page");
+  if (pageParam !== null) {
+    if (!/^\d+$/.test(pageParam) || Number(pageParam) < 1) {
+      return errorJson(400, "invalid page, expected a positive integer");
+    }
+    page = Number(pageParam);
+    if (page > GOODREADS_MAX_PAGE) {
+      return errorJson(400, `page out of range (1-${GOODREADS_MAX_PAGE})`);
+    }
+  }
+
+  return withCache(request, 86400, async () => json(await fetchGoodreadsList(chart, page)));
+}
+
 /** GET /api/awards/{source}/{year} — dispatch through the registry. */
 async function handleAwards(request: Request, source: string, rest0: string): Promise<Response> {
   const year = Number(rest0);
@@ -74,6 +102,8 @@ function endpointIndex() {
     charts: {
       billboard: BILLBOARD_CHARTS.map((chart) => `/api/charts/billboard/${chart}`),
       douban: DOUBAN_CHARTS.map((chart) => `/api/charts/douban/${chart}`),
+      imdb: IMDB_CHARTS.map((chart) => `/api/charts/imdb/${chart}`),
+      goodreads: GOODREADS_CHARTS.map((chart) => `/api/charts/goodreads/${chart}`),
     },
     awards: AWARD_SOURCES.map((source) => `/api/awards/${source}/{year}`),
   };
@@ -99,6 +129,8 @@ export const onRequest: PagesFunction = async ({ request, params }) => {
       if (resource === "charts") {
         if (source === "billboard") return await handleBillboard(request, id);
         if (source === "douban") return await handleDouban(request, id);
+        if (source === "imdb") return await handleImdb(request, id);
+        if (source === "goodreads") return await handleGoodreads(request, id);
       } else if (resource === "awards" && source) {
         return await handleAwards(request, source, id);
       }

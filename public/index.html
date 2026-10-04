@@ -116,6 +116,12 @@
       "/api/charts/douban/music-top250",
       "/api/charts/douban/music-top250-bayesian",
     ]},
+    { group: "Charts — IMDb", items: [
+      "/api/charts/imdb/top250",
+    ]},
+    { group: "Charts — Goodreads", items: [
+      "/api/charts/goodreads/best-books-ever",
+    ]},
     { group: "Awards", items: [
       "/api/awards/gma/2026",
       "/api/awards/grammy/2026",
@@ -125,7 +131,7 @@
     ]},
   ];
 
-  const GROUP_LABELS = { billboard: "Charts — Billboard", douban: "Charts — Douban", awards: "Awards" };
+  const GROUP_LABELS = { billboard: "Charts — Billboard", douban: "Charts — Douban", imdb: "Charts — IMDb", goodreads: "Charts — Goodreads", awards: "Awards" };
 
   /** GET /api 索引 -> [{group, items}]；榜单为完整路径直接用，奖项模板 {year} 取当前年。 */
   async function loadEndpoints() {

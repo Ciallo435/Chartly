@@ -15,6 +15,8 @@
 | `GET /api/charts/douban/book-top250` | 豆瓣读书 Top 250 |
 | `GET /api/charts/douban/music-top250` | 豆瓣音乐 Top 250 |
 | `GET /api/charts/douban/music-top250-bayesian` | 豆瓣音乐 Top 250（贝叶斯加权排序） |
+| `GET /api/charts/imdb/top250` | IMDb 电影 Top 250 |
+| `GET /api/charts/goodreads/best-books-ever?page=N` | Goodreads Best Books Ever（用户投票榜，100 本/页） |
 | `GET /api/awards/grammy/{year}` | 格莱美获奖名单 |
 | `GET /api/awards/gma/{year}` | 金曲奖（静态数据） |
 | `GET /api/awards/nobel/{year}` | 诺贝尔奖获奖名单 |
@@ -27,7 +29,9 @@
 {
   "charts": {
     "billboard": ["/api/charts/billboard/hot-100", "..."],
-    "douban": ["/api/charts/douban/movie-top250", "..."]
+    "douban": ["/api/charts/douban/movie-top250", "..."],
+    "imdb": ["/api/charts/imdb/top250"],
+    "goodreads": ["/api/charts/goodreads/best-books-ever"]
   },
   "awards": ["/api/awards/gma/{year}", "/api/awards/grammy/{year}", "..."]
 }
@@ -75,6 +79,56 @@
 - 音乐榜上游实际只有 **247** 条（豆瓣下架了 3 个条目），`rank` 最大值为 247。
 - `rank` 镜像豆瓣官方页面顺序：电影 / 读书按评分排序，音乐榜是豆瓣内部的热度序（非评分序）。`music-top250-bayesian` 返回同一份条目，按贝叶斯加权评分 `WR = v/(v+m)·rating + m/(v+m)·C`（m=25000，C 为全榜均分）降序重排 `rank`，供需要"质量序"的调用方使用。
 - 上游任一页解析为空（改版或被拦截）时返回 502，不会静默返回残缺列表。
+
+IMDb Top 250 响应：
+
+```json
+{
+  "url": "https://www.imdb.com/chart/top/",
+  "entries": [
+    { "rank": 1, "title": "The Shawshank Redemption",
+      "originalTitle": "The Shawshank Redemption", "year": 1994,
+      "url": "https://www.imdb.com/title/tt0111161/",
+      "cover": "https://m.media-amazon.com/images/M/MV5BMDAyY2FhYjct...jpg",
+      "rating": 9.3, "ratingCount": 3247459,
+      "runtimeMinutes": 142, "genres": ["Drama"] }
+  ]
+}
+```
+
+- 数据抓自 IMDb 前端使用的公开 GraphQL 接口 `api.graphql.imdb.com`（`chartTitles`），一次请求返回全部 250 条。官网榜单页 `www.imdb.com/chart/top/` 位于 AWS WAF 之后，服务端直接抓取只会拿到 JS 挑战页（202 空响应），故不走页面抓取。
+- 该接口要求携带浏览器来源请求头（`origin` / `referer` / `x-imdb-client-name`），缺失时返回 403；不要求 `User-Agent`，这也是它能在 Cloudflare Workers 中直接调用的原因（Workers 无法自定义出站 `User-Agent`）。
+- `rank` 取上游 `currentRank`（1–250）。`title` 为主标题，`originalTitle` 为原始语言标题（英语片两者相同）；`year` / `rating` / `ratingCount` 取不到时为 `null`。`runtimeMinutes` 由上游秒数四舍五入到分钟。`url` 由 IMDb id 拼出。
+- 上游返回 GraphQL 错误或空列表时返回 502，不会静默返回残缺列表。
+- 授权提示：IMDb 对该接口数据声明仅允许有限的**非商业**用途；公开或商业用途需另行获得 IMDb 授权（见 IMDb 官方条款）。
+
+Goodreads Best Books Ever 响应（分页，100 本/页）：
+
+```json
+{
+  "url": "https://www.goodreads.com/list/show/1.Best_Books_Ever",
+  "entries": [
+    { "rank": 1, "title": "The Hunger Games (The Hunger Games, #1)",
+      "author": "Suzanne Collins",
+      "url": "https://www.goodreads.com/book/show/2767052-the-hunger-games",
+      "cover": "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/books/1586722975i/2767052._SX50_.jpg",
+      "rating": 4.36, "ratingCount": 10301598, "score": 4552311 }
+  ]
+}
+```
+
+```text
+GET /api/charts/goodreads/best-books-ever          # 第 1 页（rank 1–100）
+GET /api/charts/goodreads/best-books-ever?page=2    # 第 2 页（rank 101–200）
+```
+
+- Goodreads 无官方 "Top 250"，这里取其最知名的用户投票总榜 **Best Books Ever**。
+- **分页**：`?page=N` 返回第 N 页，**每页 100 本**；`rank` 为全书单序号（`(N-1)·100 + 位次`），跨页连续。缺省即第 1 页。
+- 上游对列表分页设有 **100 页上限**（10,000 本）：`?page=101` 起会被 Goodreads 静默钳制为第 100 页的同一批数据，故本 API 直接拒绝 `page > 100`（返回 400），避免返回错误序号。注意该榜总数为 79,655 本，但分页只能取到前 10,000 本。
+- 抓自列表页 HTML 的 schema.org/Book 结构化标记。Robots.txt 对 `User-agent: *` 允许 `/list/show`（仅禁止 `/search`、`/work`、`/api` 等），且页面无需浏览器 `User-Agent` 即可返回 200，故可在 Workers 直接抓取。
+- `score` 是列表的投票分数，也是该榜的排序依据——因此 **`rating` 更低的书可能排在前面**（如 rank 1 的 4.36 分高于 rank 4 的 4.50 分，但 score 更高）。`rating` / `ratingCount` / `score` 取不到时为 `null`。
+- `title` / `author` 取列表页展示值（含系列后缀，如 `(The Hunger Games, #1)`）；多位作者时只取首位。
+- 上游非 200 或解析为空时返回 502，不会静默返回空列表。缓存按完整 URL（含 `?page`）分别缓存 24 小时。
 
 奖项响应：
 
@@ -193,7 +247,7 @@ GET /api/charts/billboard/album-200?date=2020-06-01
 ## 限流与缓存
 
 - 限流：每 IP 60 请求/分钟，超限返回 `429` + `Retry-After`（isolate 内存实现，跨实例为近似计数）。
-- 缓存：Cloudflare Cache API，Billboard 榜单 1 小时、豆瓣榜单 24 小时、奖项 24 小时（TGA 为 7 天），响应带 `X-Cache: HIT/MISS`。
+- 缓存：Cloudflare Cache API，Billboard 榜单 1 小时、豆瓣 / IMDb / Goodreads 榜单 24 小时、奖项 24 小时（TGA 为 7 天），响应带 `X-Cache: HIT/MISS`。
 - CORS：全开放（`*`）。
 
 ## 本地开发
@@ -216,7 +270,7 @@ npm run deploy     # wrangler pages deploy
 ```text
 functions/
 ├── _lib/                  # 下划线前缀：不作为路由，仅供导入
-│   ├── adapters/          # billboard / douban / grammy / gma / nobel / oscars / tga
+│   ├── adapters/          # billboard / douban / imdb / goodreads / grammy / gma / nobel / oscars / tga
 │   ├── cache.ts
 │   ├── cors.ts
 │   ├── ratelimit.ts
@@ -229,6 +283,9 @@ functions/
 ## 说明
 
 - Billboard / Grammy / 豆瓣为实时抓取上游页面，上游改版会导致该源暂时 502。
+- IMDb 走官方前端所用的公开 GraphQL 接口（非页面抓取），实时性好、无 WAF 挑战；但需遵守 IMDb 的非商业使用条款。
+- Goodreads 为实时抓取用户投票榜列表页（Robots.txt 允许 `/list/show`），榜单随用户投票缓慢变动。
+- **Rate Your Music (RYM) 未实现**：其站点被 Cloudflare 机器人挑战拦截（403 `Cf-Mitigated: challenge`），且 `robots.txt` 明确声明 "Sonemic, Inc. prohibits any kind of automated means (e.g. crawling, scraping) of access ... without express permission"。实时抓取既不可行也违反其服务条款，故不提供该数据源。
 - 豆瓣移动端 rexxar JSON API 只提供电影与读书两个 collection（`music_top250` 为 404），故三个榜单统一抓桌面版列表页。
 - Nobel 为官方 API 实时代理，数据随 NobelPrize.org 更新（当年奖项于 10 月起陆续公布，公布前查询该年返回空列表）。
 - Grammy 年份按官网资格年（eligibility year）命名，请求较新年份会自动回退到最近一届，响应中的 `year` 为实际届次年份。
