@@ -11,11 +11,28 @@
 | `GET /api/charts/billboard/album-200` | Billboard 200（专辑榜） |
 | `GET /api/charts/billboard/global-200` | Global 200 |
 | `GET /api/charts/billboard/artist-100` | Artist 100（歌手榜） |
+| `GET /api/charts/douban/movie-top250` | 豆瓣电影 Top 250 |
+| `GET /api/charts/douban/book-top250` | 豆瓣读书 Top 250 |
+| `GET /api/charts/douban/music-top250` | 豆瓣音乐 Top 250 |
 | `GET /api/awards/grammy/{year}` | 格莱美获奖名单 |
 | `GET /api/awards/gma/{year}` | 金曲奖（静态数据） |
 | `GET /api/awards/nobel/{year}` | 诺贝尔奖获奖名单 |
 | `GET /api/awards/oscars/{year}` | 奥斯卡获奖与提名名单（Wikipedia 源） |
 | `GET /api/awards/tga/{year}` | TGA 获奖名单（2014 起，仅获奖者） |
+
+`GET /api` 返回端点索引：
+
+```json
+{
+  "charts": {
+    "billboard": ["/api/charts/billboard/hot-100", "..."],
+    "douban": ["/api/charts/douban/movie-top250", "..."]
+  },
+  "awards": ["/api/awards/gma/{year}", "/api/awards/grammy/{year}", "..."]
+}
+```
+
+- 榜单是完整路径，奖项因需要年份而给模板；索引由路由校验用的同一批常量生成，不会与真实路径脱节。
 
 榜单响应：
 
@@ -33,6 +50,29 @@
 歌手榜（`artist-100`）的条目没有 `title` 字段，`artist` 即歌手名。`date` 是归一化后的榜单周六（可能与请求的 `?date` 不同），`url` 是数据来源的官网页面。
 
 最小必要原则：响应不回显路径中已包含的 `source` / `chart` / `type`，只返回调用者无法自行推导的字段。
+
+豆瓣 TOP250 响应（电影 / 读书 / 音乐同构）：
+
+```json
+{
+  "url": "https://movie.douban.com/top250",
+  "entries": [
+    { "rank": 1, "title": "肖申克的救赎",
+      "url": "https://movie.douban.com/subject/1292052/",
+      "cover": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2934829882.jpg",
+      "rating": 9.7, "ratingCount": 3347290,
+      "info": "1994 / 美国 / 犯罪 剧情", "quote": "希望让人自由。" }
+  ]
+}
+```
+
+- `rank` 为榜单内序号，`url` 是条目页，`cover` 为列表页缩略图。
+- `info` 是页面上原有的 `/` 分隔描述行，含义随榜单变化：电影 = `年份 / 地区 / 类型`，读书 = `作者 / 出版社 / 出版年 / 价格`，音乐 = `歌手 / 发行日期 / 版本 / 介质 / 风格`。
+- `quote` 为列表页短评，仅电影与读书有（分别为 135 / 160 条），音乐恒为 `null`；`rating` / `ratingCount` 取不到时为 `null`。
+- 只返回主标题：电影页 `title` span 里的外文名（第二个 span）会被丢弃。
+- 数据抓取自桌面版列表页 `?start=0,25,…,225` 共 10 页并行合成，缓存 24 小时。
+- 音乐榜上游实际只有 **247** 条（豆瓣下架了 3 个条目），`rank` 最大值为 247。
+- 上游任一页解析为空（改版或被拦截）时返回 502，不会静默返回残缺列表。
 
 奖项响应：
 
@@ -151,7 +191,7 @@ GET /api/charts/billboard/album-200?date=2020-06-01
 ## 限流与缓存
 
 - 限流：每 IP 60 请求/分钟，超限返回 `429` + `Retry-After`（isolate 内存实现，跨实例为近似计数）。
-- 缓存：Cloudflare Cache API，榜单 1 小时、奖项 24 小时（TGA 为 7 天），响应带 `X-Cache: HIT/MISS`。
+- 缓存：Cloudflare Cache API，Billboard 榜单 1 小时、豆瓣榜单 24 小时、奖项 24 小时（TGA 为 7 天），响应带 `X-Cache: HIT/MISS`。
 - CORS：全开放（`*`）。
 
 ## 本地开发
@@ -174,7 +214,7 @@ npm run deploy     # wrangler pages deploy
 ```text
 functions/
 ├── _lib/                  # 下划线前缀：不作为路由，仅供导入
-│   ├── adapters/          # billboard / grammy / gma / nobel / oscars / tga
+│   ├── adapters/          # billboard / douban / grammy / gma / nobel / oscars / tga
 │   ├── cache.ts
 │   ├── cors.ts
 │   ├── ratelimit.ts
@@ -186,7 +226,8 @@ functions/
 
 ## 说明
 
-- Billboard / Grammy 为实时抓取上游页面，上游改版会导致该源暂时 502。
+- Billboard / Grammy / 豆瓣为实时抓取上游页面，上游改版会导致该源暂时 502。
+- 豆瓣移动端 rexxar JSON API 只提供电影与读书两个 collection（`music_top250` 为 404），故三个榜单统一抓桌面版列表页。
 - Nobel 为官方 API 实时代理，数据随 NobelPrize.org 更新（当年奖项于 10 月起陆续公布，公布前查询该年返回空列表）。
 - Grammy 年份按官网资格年（eligibility year）命名，请求较新年份会自动回退到最近一届，响应中的 `year` 为实际届次年份。
 - GMA（金曲奖）目前为内置静态种子数据，后续按年补充或接入真实抓取。
